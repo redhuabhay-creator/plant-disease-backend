@@ -150,16 +150,7 @@ import numpy as np
 from PIL import Image
 import json
 import io
-
-# -----------------------------
-# Load ML Model (Only Once)
-# -----------------------------
-model = tf.keras.models.load_model("plant_model.keras")
-
-with open("class_names.json", "r") as f:
-    class_names_raw = json.load(f)
-
-index_to_class = {v: k for k, v in class_names_raw.items()}
+import os
 
 # -----------------------------
 # Initialize FastAPI
@@ -173,6 +164,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -----------------------------
+# Lazy Load ML Model
+# -----------------------------
+model = None
+index_to_class = None
+
+
+def load_model_if_needed():
+    global model, index_to_class
+
+    if model is None:
+        print("Loading ML model...")
+        model = tf.keras.models.load_model("plant_model.keras")
+
+        with open("class_names.json", "r") as f:
+            class_names_raw = json.load(f)
+
+        index_to_class = {v: k for k, v in class_names_raw.items()}
+        print("Model loaded successfully!")
+
 
 # -----------------------------
 # GLOBAL SYSTEM STATE
@@ -194,6 +206,7 @@ class SensorData(BaseModel):
     humidity: float
     moisture: int
 
+
 class PumpControl(BaseModel):
     mode: str   # AUTO / ON / OFF
 
@@ -212,8 +225,9 @@ def home():
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
+        load_model_if_needed()
 
+        contents = await file.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         image = image.resize((224, 224))
 
@@ -246,15 +260,12 @@ def receive_sensor_data(data: SensorData):
     latest_sensor_data = data.dict()
     moisture = latest_sensor_data["moisture"]
 
-    # -------- Pump Logic --------
     if pump_mode == "ON":
         pump_state = "ON"
-
     elif pump_mode == "OFF":
         pump_state = "OFF"
-
     else:  # AUTO mode
-        if moisture < 30:   # because ESP32 sends 0-100 %
+        if moisture < 30:
             pump_state = "ON"
         else:
             pump_state = "OFF"
@@ -290,14 +301,6 @@ def control_pump(control: PumpControl):
 
     if mode in ["AUTO", "ON", "OFF"]:
         pump_mode = mode
-        return {
-            "message": f"Pump mode set to {pump_mode}"
-        }
+        return {"message": f"Pump mode set to {pump_mode}"}
 
     return {"error": "Invalid mode. Use AUTO / ON / OFF"}
-import os
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port)
